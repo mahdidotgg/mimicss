@@ -1,6 +1,6 @@
 {
   "name": "mimicss",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Experimental CSS minifier & Vite plugin",
   "type": "module",
   "main": "dist/index.js",
@@ -19,13 +19,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
     "format": "prettier --write src",
     "format:check": "prettier --check src",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run lint && npm run typecheck && npm run build"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "keywords": [
     "css",
@@ -64,6 +65,7 @@
     "prettier": "^3.7.4",
     "typescript": "^5.4.0",
     "typescript-eslint": "^8.49.0",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "vitest": "^3.2.3"
   }
 }

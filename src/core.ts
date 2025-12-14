@@ -250,14 +250,11 @@ export class ClassMinifier {
     }
 
     const transformClassList = (str: string): string => {
-      const leadingWhitespace = /^\s*/.exec(str)?.[0] ?? ''
-      const trailingWhitespace = /\s*$/.exec(str)?.[0] ?? ''
       const classes = str
         .trim()
         .split(/\s+/)
         .filter((c) => c.length > 0)
-      const transformed = classes.map((c) => classMap.get(c) ?? c).join(' ')
-      return leadingWhitespace + transformed + trailingWhitespace
+      return classes.map((c) => classMap.get(c) ?? c).join(' ')
     }
 
     const checkPartialTransform = (
@@ -284,11 +281,10 @@ export class ClassMinifier {
     }
 
     const transformPartial = (str: string, partialSuffix: string): string => {
-      const leadingWhitespace = /^\s*/.exec(str)?.[0] ?? ''
-      const beforePartial = str.trimStart().slice(0, -partialSuffix.length).trim()
+      const beforePartial = str.trim().slice(0, -partialSuffix.length).trim()
       const classes = beforePartial.split(/\s+/).filter((c) => c.length > 0)
       const transformed = classes.map((c) => classMap.get(c) ?? c).join(' ')
-      return `${leadingWhitespace}${transformed} ${partialSuffix}`
+      return `${transformed} ${partialSuffix}`
     }
 
     const escapeTemplateRaw = (str: string): string => {
