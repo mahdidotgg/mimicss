@@ -1,0 +1,69 @@
+{
+  "name": "mimicss",
+  "version": "1.0.0",
+  "description": "Experimental CSS minifier & Vite plugin",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./vite-plugin": {
+      "import": "./dist/vite-plugin.js",
+      "types": "./dist/vite-plugin.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build"
+  },
+  "keywords": [
+    "css",
+    "minifier",
+    "tailwind",
+    "vite",
+    "class-names",
+    "optimization",
+    "build-tool"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "vite": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@babel/generator": "^7.24.0",
+    "@babel/parser": "^7.24.0",
+    "@babel/traverse": "^7.24.0",
+    "postcss": "^8.4.35",
+    "postcss-selector-parser": "^6.0.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/babel__generator": "^7.6.8",
+    "@types/babel__traverse": "^7.20.5",
+    "@types/node": "^25.0.2",
+    "eslint": "^9.39.2",
+    "prettier": "^3.7.4",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.49.0",
+    "vite": "^7.2.7"
+  }
+}
