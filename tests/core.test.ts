@@ -196,12 +196,68 @@ describe('ClassMinifier', () => {
       const result = minifier.transformJS(js)
       expect(result).toContain('fi fi-')
     })
+
+    it('should transform strings with mixed known and unknown classes', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { } .items-center { }')
+
+      // "custom-animation" is not in CSS, but flex and items-center are
+      const js = 'const x = "flex items-center custom-animation"'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // Known classes should be transformed, unknown should be preserved
+      expect(result).toContain(mapping['flex'])
+      expect(result).toContain(mapping['items-center'])
+      expect(result).toContain('custom-animation')
+      // Original class names should NOT be in output
+      expect(result).not.toContain('"flex')
+      expect(result).not.toContain('items-center')
+    })
+
+    it('should not transform strings with no known classes', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { }')
+
+      // None of these are in the CSS
+      const js = 'const x = "unknown-class another-unknown"'
+      const result = minifier.transformJS(js)
+      expect(result).toContain('unknown-class another-unknown')
+    })
+
+    it('should not transform strings inside style objects', () => {
+      const minifier = new ClassMinifier()
+      // 'hidden' and 'visible' are both valid Tailwind classes
+      minifier.extractFromCSS('.hidden { display: none; } .visible { visibility: visible; }')
+
+      // Simulates compiled JSX: jsx("div", { style: { overflow: "hidden", visibility: "visible" } })
+      const js = 'jsx("div", { style: { overflow: "hidden", visibility: "visible" } })'
+      const result = minifier.transformJS(js)
+
+      // Style values should NOT be transformed even though they match class names
+      expect(result).toContain('overflow: "hidden"')
+      expect(result).toContain('visibility: "visible"')
+    })
+
+    it('should transform className but not style in same object', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.hidden { } .flex { }')
+
+      // className should be transformed, style values should not
+      const js = 'jsx("div", { className: "hidden flex", style: { overflow: "hidden" } })'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // className value should be transformed
+      expect(result).toContain(`className: "${mapping['hidden']} ${mapping['flex']}"`)
+      // style value should NOT be transformed
+      expect(result).toContain('overflow: "hidden"')
+    })
   })
 
   describe('character set', () => {
-    it('should use underscore in generated names', () => {
+    it('should only use letters in generated names', () => {
       const minifier = new ClassMinifier()
-      // Generate enough classes to use underscore (53rd character)
       let css = ''
       for (let i = 0; i < 60; i++) {
         css += `.class${String(i)} { } `
@@ -210,12 +266,13 @@ describe('ClassMinifier', () => {
 
       const mapping = minifier.getMapping()
       const values = Object.values(mapping)
-      expect(values).toContain('_')
+      for (const name of values) {
+        expect(name).toMatch(/^[a-zA-Z]+$/)
+      }
     })
 
     it('should generate two-character names after exhausting single chars', () => {
       const minifier = new ClassMinifier()
-      // Generate 60 classes (more than 53 available)
       let css = ''
       for (let i = 0; i < 60; i++) {
         css += `.class${String(i)} { } `
@@ -243,6 +300,131 @@ describe('ClassMinifier', () => {
       const mapping = minifier.getMapping()
       expect(mapping).toHaveProperty('flex')
       expect(mapping).toHaveProperty('block')
+    })
+  })
+
+  describe('whitespace preservation', () => {
+    it('should preserve original code formatting', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { display: flex; }')
+
+      const js = `const x = "flex"
+const y = 'another'
+// comment
+function test() {
+  return "flex"
+}`
+      const result = minifier.transformJS(js)
+
+      // Should preserve newlines, comments, indentation
+      expect(result).toContain("const y = 'another'")
+      expect(result).toContain('// comment')
+      expect(result).toContain('function test() {')
+      // The class names should be transformed
+      const mapping = minifier.getMapping()
+      expect(result).toContain(`"${mapping['flex']}"`)
+    })
+
+    it('should preserve single quotes in string literals', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { display: flex; }')
+
+      const js = "const x = 'flex'"
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // Should use single quotes
+      expect(result).toContain(`'${mapping['flex']}'`)
+    })
+
+    it('should preserve double quotes in string literals', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { display: flex; }')
+
+      const js = 'const x = "flex"'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // Should use double quotes
+      expect(result).toContain(`"${mapping['flex']}"`)
+    })
+
+    it('should preserve comments in code', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { }')
+
+      const js = `
+// This is a comment
+const x = "flex" // inline comment
+/* block comment */
+`
+      const result = minifier.transformJS(js)
+      expect(result).toContain('// This is a comment')
+      expect(result).toContain('// inline comment')
+      expect(result).toContain('/* block comment */')
+    })
+  })
+
+  describe('template literal spacing', () => {
+    it('should preserve whitespace at expression boundaries', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { } .items-center { }')
+
+      const js = 'const x = `flex ${condition} items-center`'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // Should have spaces around the expression
+      expect(result).toContain(`\`${mapping['flex']} \${condition} ${mapping['items-center']}\``)
+    })
+
+    it('should preserve leading space in template quasi after expression', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.hidden { }')
+
+      const js = 'const x = `${base} hidden`'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // The space before "hidden" must be preserved
+      expect(result).toContain(`\${base} ${mapping['hidden']}`)
+    })
+
+    it('should preserve trailing space in template quasi before expression', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.flex { }')
+
+      const js = 'const x = `flex ${extra}`'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // The space after "flex" must be preserved
+      expect(result).toContain(`\`${mapping['flex']} \${extra}`)
+    })
+
+    it('should handle multiple expressions with proper spacing', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.a { } .b { } .c { }')
+
+      const js = 'const x = `a ${x} b ${y} c`'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // All boundary spaces must be preserved
+      expect(result).toContain(`\`${mapping['a']} \${x} ${mapping['b']} \${y} ${mapping['c']}\``)
+    })
+
+    it('should add spaces at expression boundaries to prevent concatenation', () => {
+      const minifier = new ClassMinifier()
+      minifier.extractFromCSS('.prefix { }')
+
+      // No space between prefix and expression in original
+      const js = 'const x = `prefix${suffix}`'
+      const result = minifier.transformJS(js)
+      const mapping = minifier.getMapping()
+
+      // Should ADD a trailing space to prevent class concatenation
+      expect(result).toContain(`\`${mapping['prefix']} \${suffix}`)
     })
   })
 })

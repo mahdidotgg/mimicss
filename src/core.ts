@@ -1,83 +1,47 @@
 import { parse, type ParserOptions } from '@babel/parser'
 import type { TraverseOptions } from '@babel/traverse'
-import type { GeneratorOptions } from '@babel/generator'
 import type * as BabelTypes from '@babel/types'
 import postcss from 'postcss'
 import selectorParser from 'postcss-selector-parser'
-
+import MagicString from 'magic-string'
 
 import _traverse from '@babel/traverse'
-import _generate from '@babel/generator'
 
 type TraverseFn = (ast: BabelTypes.Node, opts: TraverseOptions) => void
-
-type GenerateFn = (ast: BabelTypes.Node, opts?: GeneratorOptions) => { code: string }
 
 const traverse: TraverseFn =
   typeof _traverse === 'function'
     ? _traverse
     : (_traverse as unknown as { default: TraverseFn }).default
 
-const generate: GenerateFn =
-  typeof _generate === 'function'
-    ? _generate
-    : (_generate as unknown as { default: GenerateFn }).default
+const BASE54 = 'etnrisouacldhmpgfbwyvkxjqzETNRISOUACLDHMPGFBWYVKXJQZ'.split('')
 
-/** Characters that can start a CSS class name (a-z, A-Z, underscore = 53 chars) */
-const LEADING_CHARS = [
-  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-  'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-  '_',
-]
-
-/** Characters that can only appear after the first character (digits, hyphen = 11 chars) */
-const FOLLOWING_ONLY_CHARS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-']
-
-/** All 64 valid CSS class name characters */
-const ALL_CHARS = [...LEADING_CHARS, ...FOLLOWING_ONLY_CHARS]
-
-/** Babel parser configuration for analyzing JS/JSX code */
 const PARSER_OPTIONS: ParserOptions = {
   sourceType: 'unambiguous',
   plugins: ['jsx'],
   errorRecovery: true,
 }
 
-/**
- * Configuration options for the ClassMinifier
- */
 export interface ClassMinifierOptions {
-  /** Regular expressions for class names to exclude from minification */
   exclude?: RegExp[]
 }
 
-/**
- * Generates short identifiers using a frequency-optimized character set.
- * Similar to terser
- */
 class NameGenerator {
-  private leadingChars: string[]
-  private allChars: string[]
+  private chars: string[]
   private readonly frequency: Map<string, number>
 
   constructor() {
-    this.leadingChars = [...LEADING_CHARS]
-    this.allChars = [...ALL_CHARS]
+    this.chars = [...BASE54]
     this.frequency = new Map()
-    this.reset()
   }
 
-  /** Reset frequency counts to zero */
   reset(): void {
     this.frequency.clear()
-    for (const ch of ALL_CHARS) {
+    for (const ch of BASE54) {
       this.frequency.set(ch, 0)
     }
   }
 
-  /** Record character usage */
   recordUsage(str: string, weight = 1): void {
     for (const ch of str) {
       const current = this.frequency.get(ch)
@@ -87,59 +51,48 @@ class NameGenerator {
     }
   }
 
-  /** Sort character sets by frequency */
   sortByFrequency(): void {
-    const compare = (a: string, b: string): number =>
-      (this.frequency.get(b) ?? 0) - (this.frequency.get(a) ?? 0)
-
-    this.leadingChars = [...LEADING_CHARS].sort(compare)
-    this.allChars = [...ALL_CHARS].sort(compare)
+    this.chars = [...BASE54].sort(
+      (a, b) => (this.frequency.get(b) ?? 0) - (this.frequency.get(a) ?? 0),
+    )
   }
 
-  /** Generate for the given index */
   generate(index: number): string {
+    const base = this.chars.length
     let result = ''
-    let base = this.leadingChars.length
-    let num = index + 1
+    let n = index
 
     do {
-      num--
-      if (result.length === 0) {
-        result = this.leadingChars[num % base] ?? ''
-      } else {
-        result += this.allChars[num % this.allChars.length] ?? ''
-      }
-      num = Math.floor(num / base)
-      base = this.allChars.length
-    } while (num > 0)
+      result = this.chars[n % base] + result
+      n = Math.floor(n / base) - 1
+    } while (n >= 0)
 
     return result
   }
 }
 
-/**
- * Minifies CSS class names by replacing them with shorter versions.
- */
 export class ClassMinifier {
   private currentIndex = 0
   private readonly classMap = new Map<string, string>()
   private readonly excludePatterns: RegExp[]
   private readonly nameGenerator: NameGenerator
   private readonly classUsageCount = new Map<string, number>()
+  private readonly dynamicPrefixes = new Set<string>()
 
   constructor(options: ClassMinifierOptions = {}) {
     this.excludePatterns = options.exclude ?? []
     this.nameGenerator = new NameGenerator()
   }
 
-  /** Check if a class name matches any exclude pattern */
   private isExcluded(className: string): boolean {
-    return this.excludePatterns.some((pattern) => pattern.test(className))
+    if (this.excludePatterns.some((pattern) => pattern.test(className))) return true
+    for (const prefix of this.dynamicPrefixes) {
+      if (className.startsWith(prefix)) return true
+    }
+    return false
   }
 
-  /** Generate the next available short name, skipping excluded patterns */
   private getNextName(): string {
-    // Loop until we find a non-excluded name
     for (;;) {
       const name = this.nameGenerator.generate(this.currentIndex++)
       if (!this.isExcluded(name)) {
@@ -148,13 +101,10 @@ export class ClassMinifier {
     }
   }
 
-  /**
-   * Analyze JavaScript code to count class name usage.
-   * Call this before extractFromCSS to optimize name assignment.
-   */
   analyzeJS(code: string): void {
     const ast = parse(code, PARSER_OPTIONS)
     const classUsage = this.classUsageCount
+    const dynamicPrefixes = this.dynamicPrefixes
 
     const countClasses = (str: string): void => {
       const classes = str
@@ -167,23 +117,37 @@ export class ClassMinifier {
       }
     }
 
+    const detectPrefixes = (str: string): void => {
+      const tokens = str
+        .trim()
+        .split(/\s+/)
+        .filter((c) => c.length > 0)
+      for (const token of tokens) {
+        if (token.endsWith('-') || token.endsWith(':')) {
+          dynamicPrefixes.add(token)
+        }
+      }
+    }
+
     traverse(ast, {
       StringLiteral(path) {
         countClasses(path.node.value)
       },
       TemplateLiteral(path) {
-        for (const quasi of path.node.quasis) {
-          if (quasi.value.cooked) {
-            countClasses(quasi.value.cooked)
+        const quasis = path.node.quasis
+        for (let i = 0; i < quasis.length; i++) {
+          const cooked = quasis[i].value.cooked
+          if (cooked) {
+            countClasses(cooked)
+            if (i < quasis.length - 1) {
+              detectPrefixes(cooked)
+            }
           }
         }
       },
     })
   }
 
-  /**
-   * Extract class names from CSS and build mapping.
-   */
   extractFromCSS(css: string): void {
     this.nameGenerator.reset()
     const cssClasses = new Set<string>()
@@ -200,7 +164,6 @@ export class ClassMinifier {
 
     this.nameGenerator.sortByFrequency()
 
-    // Sort classes by JS usage frequency (most used first)
     const sortedClasses = [...cssClasses].sort(
       (a, b) => (this.classUsageCount.get(b) ?? 0) - (this.classUsageCount.get(a) ?? 0),
     )
@@ -214,7 +177,6 @@ export class ClassMinifier {
     }
   }
 
-  /** Transform CSS by replacing class names with their minified versions */
   transformCSS(css: string): string {
     const root = postcss.parse(css)
 
@@ -234,27 +196,33 @@ export class ClassMinifier {
     return root.toString()
   }
 
-  /** Transform JavaScript by replacing classname strings */
   transformJS(code: string): string {
     const ast = parse(code, PARSER_OPTIONS)
+    const magicString = new MagicString(code)
     const classMap = this.classMap
 
-    const isValidClassList = (str: string): boolean => {
+    const isTransformable = (str: string): boolean => {
       const trimmed = str.trim()
       if (!trimmed) return false
-
-      const classes = trimmed.split(/\s+/).filter((c) => c.length > 0)
-      if (classes.length === 0) return false
-
-      return classes.every((c) => classMap.has(c))
+      const classes = trimmed.split(/\s+/)
+      return classes.length > 0 && classes.some((c) => classMap.has(c))
     }
 
-    const transformClassList = (str: string): string => {
+    const transformClassList = (
+      str: string,
+      addLeadingSpace = false,
+      addTrailingSpace = false,
+    ): string => {
+      const leadingSpace = addLeadingSpace ? ' ' : ''
       const classes = str
         .trim()
         .split(/\s+/)
         .filter((c) => c.length > 0)
-      return classes.map((c) => classMap.get(c) ?? c).join(' ')
+      const lastClass = classes.at(-1)
+      const endsWithPartial =
+        lastClass !== undefined && (lastClass.endsWith('-') || lastClass.endsWith(':'))
+      const trailingSpace = addTrailingSpace && !endsWithPartial ? ' ' : ''
+      return leadingSpace + classes.map((c) => classMap.get(c) ?? c).join(' ') + trailingSpace
     }
 
     const checkPartialTransform = (
@@ -269,7 +237,6 @@ export class ClassMinifier {
       const lastPart = parts[parts.length - 1]
       if (!lastPart) return { canTransform: false, partialSuffix: '' }
 
-      // Check for partial class prefixes
       if (lastPart.endsWith('-') || lastPart.endsWith(':')) {
         const completeClasses = parts.slice(0, -1)
         if (completeClasses.length > 0 && completeClasses.every((c) => classMap.has(c))) {
@@ -280,54 +247,115 @@ export class ClassMinifier {
       return { canTransform: false, partialSuffix: '' }
     }
 
-    const transformPartial = (str: string, partialSuffix: string): string => {
+    const transformPartial = (
+      str: string,
+      partialSuffix: string,
+      preserveLeadingWhitespace = false,
+    ): string => {
+      const leadingSpace = preserveLeadingWhitespace && str.startsWith(' ') ? ' ' : ''
       const beforePartial = str.trim().slice(0, -partialSuffix.length).trim()
       const classes = beforePartial.split(/\s+/).filter((c) => c.length > 0)
       const transformed = classes.map((c) => classMap.get(c) ?? c).join(' ')
-      return `${transformed} ${partialSuffix}`
+      return `${leadingSpace}${transformed} ${partialSuffix}`
     }
 
     const escapeTemplateRaw = (str: string): string => {
       return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$')
     }
 
+    const escapeStringLiteral = (str: string, quote: string): string => {
+      let escaped = str.replace(/\\/g, '\\\\')
+      if (quote === '"') {
+        escaped = escaped.replace(/"/g, '\\"')
+      } else if (quote === "'") {
+        escaped = escaped.replace(/'/g, "\\'")
+      }
+      return escaped
+    }
+
+    const isInsideStyleProp = (path: { parentPath?: unknown }): boolean => {
+      let current = path.parentPath as
+        | { node?: { type?: string; key?: { type?: string; name?: string } }; parentPath?: unknown }
+        | undefined
+      while (current) {
+        const node = current.node
+        if (node?.type === 'ObjectProperty') {
+          const key = node.key
+          if (key?.type === 'Identifier' && key.name === 'style') {
+            return true
+          }
+        }
+        current = current.parentPath as typeof current
+      }
+      return false
+    }
+
+    const isInConcatenation = (path: {
+      parent: unknown
+      node: unknown
+    }): { before: boolean; after: boolean } => {
+      const parent = path.parent as {
+        type?: string
+        operator?: string
+        left?: unknown
+        right?: unknown
+      } | null
+      if (parent?.type !== 'BinaryExpression' || parent.operator !== '+') {
+        return { before: false, after: false }
+      }
+      const isLeftSide = parent.left === path.node
+      const isRightSide = parent.right === path.node
+      return { before: isRightSide, after: isLeftSide }
+    }
+
     traverse(ast, {
       StringLiteral(path) {
-        if (isValidClassList(path.node.value)) {
-          path.node.value = transformClassList(path.node.value)
+        const node = path.node
+        if (node.start == null || node.end == null) return
+
+        if (isInsideStyleProp(path)) return
+
+        if (isTransformable(node.value)) {
+          const concat = isInConcatenation(path as { parent: unknown; node: unknown })
+          const transformed = transformClassList(node.value, concat.before, concat.after)
+          const originalQuote = code.charAt(node.start)
+          const escaped = escapeStringLiteral(transformed, originalQuote)
+          magicString.overwrite(node.start, node.end, `${originalQuote}${escaped}${originalQuote}`)
         }
       },
       TemplateLiteral(path) {
         const quasis = path.node.quasis
         quasis.forEach((quasi, index) => {
+          if (quasi.start == null || quasi.end == null) return
           const cooked = quasi.value.cooked
           if (!cooked) return
 
-          if (isValidClassList(cooked)) {
-            const transformed = transformClassList(cooked)
-            quasi.value.cooked = transformed
-            quasi.value.raw = escapeTemplateRaw(transformed)
-          } else if (index < quasis.length - 1) {
+          const hasExpressionBefore = index > 0
+          const hasExpressionAfter = index < quasis.length - 1
+
+          if (isTransformable(cooked)) {
+            const transformed = transformClassList(cooked, hasExpressionBefore, hasExpressionAfter)
+            const raw = escapeTemplateRaw(transformed)
+            magicString.overwrite(quasi.start, quasi.end, raw)
+          } else if (hasExpressionAfter) {
             const { canTransform, partialSuffix } = checkPartialTransform(cooked)
             if (canTransform) {
-              const transformed = transformPartial(cooked, partialSuffix)
-              quasi.value.cooked = transformed
-              quasi.value.raw = escapeTemplateRaw(transformed)
+              const transformed = transformPartial(cooked, partialSuffix, hasExpressionBefore)
+              const raw = escapeTemplateRaw(transformed)
+              magicString.overwrite(quasi.start, quasi.end, raw)
             }
           }
         })
       },
     })
 
-    return generate(ast, { compact: true, minified: true }).code
+    return magicString.toString()
   }
 
-  /** Get the complete class name mapping */
   getMapping(): Record<string, string> {
     return Object.fromEntries(this.classMap)
   }
 
-  /** Get the total number of mapped classes */
   getClassCount(): number {
     return this.classMap.size
   }

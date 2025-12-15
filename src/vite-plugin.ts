@@ -1,74 +1,45 @@
 import { ClassMinifier, type ClassMinifierOptions } from './core.js'
 
-/**
- * Configuration options for the Vite plugin
- */
 export interface ClassMinifierPluginOptions extends ClassMinifierOptions {
-  /** Enable verbose logging and output class-map.json */
   verbose?: boolean
 }
 
-interface CSSAsset {
+interface OutputAsset {
+  type: 'asset'
   source: string
 }
 
-interface JSChunk {
+interface OutputChunk {
+  type: 'chunk'
   code: string
 }
 
-interface BundleChunk {
-  type: string
-  source?: string
-  code?: string
-}
+type BundleEntry = OutputAsset | OutputChunk | { type: string }
 
-interface PluginContext {
-  emitFile: (file: { type: string; fileName: string; source: string }) => void
-}
-
-function isCSSAsset(name: string, chunk: BundleChunk): chunk is BundleChunk & CSSAsset {
+function isCSSAsset(name: string, chunk: BundleEntry): chunk is OutputAsset {
   return (
-    name.endsWith('.css') && chunk.type === 'asset' && typeof chunk.source === 'string'
+    name.endsWith('.css') &&
+    chunk.type === 'asset' &&
+    'source' in chunk &&
+    typeof chunk.source === 'string'
   )
 }
 
-function isJSChunk(chunk: BundleChunk): chunk is BundleChunk & JSChunk {
-  return chunk.type === 'chunk' && typeof chunk.code === 'string'
+function isJSChunk(chunk: BundleEntry): chunk is OutputChunk {
+  return chunk.type === 'chunk' && 'code' in chunk && typeof chunk.code === 'string'
 }
 
-/**
- * Vite plugin that minifies CSS class names in the build output.
- *
- * @example
- * ```ts
- * import mimicss from 'mimicss/vite-plugin'
- *
- * export default defineConfig({
- *   plugins: [
- *     mimicss({
- *       verbose: true,
- *       exclude: [/^fi$/, /^fi-/], // Exclude flag-icon classes
- *     }),
- *   ],
- * })
- * ```
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export default function classMinifierPlugin(options: ClassMinifierPluginOptions = {}): any {
+export default function mimicssVitePlugin(options: ClassMinifierPluginOptions = {}) {
   const minifier = new ClassMinifier({ exclude: options.exclude })
 
   return {
     name: 'class-minifier',
-    enforce: 'post',
-    apply: 'build',
+    enforce: 'post' as const,
+    apply: 'build' as const,
 
-    generateBundle(
-      this: PluginContext,
-      _outputOptions: unknown,
-      bundle: Record<string, BundleChunk>,
-    ) {
-      const cssAssets: CSSAsset[] = []
-      const jsChunks: JSChunk[] = []
+    generateBundle(_outputOptions: unknown, bundle: Record<string, BundleEntry>) {
+      const cssAssets: OutputAsset[] = []
+      const jsChunks: OutputChunk[] = []
 
       for (const [name, chunk] of Object.entries(bundle)) {
         if (isCSSAsset(name, chunk)) {
@@ -78,7 +49,6 @@ export default function classMinifierPlugin(options: ClassMinifierPluginOptions 
         }
       }
 
-      // 1: analyze JS to count class usage
       for (const chunk of jsChunks) {
         try {
           minifier.analyzeJS(chunk.code)
@@ -87,7 +57,6 @@ export default function classMinifierPlugin(options: ClassMinifierPluginOptions 
         }
       }
 
-      // 2: extract classes from CSS and build mapping
       for (const asset of cssAssets) {
         minifier.extractFromCSS(asset.source)
       }
@@ -96,12 +65,10 @@ export default function classMinifierPlugin(options: ClassMinifierPluginOptions 
         console.log(`[class-minifier] Found ${minifier.getClassCount().toString()} classes`)
       }
 
-      // 3: transform CSS
       for (const asset of cssAssets) {
         asset.source = minifier.transformCSS(asset.source)
       }
 
-      // 3: transform JS
       for (const chunk of jsChunks) {
         try {
           chunk.code = minifier.transformJS(chunk.code)
@@ -112,9 +79,9 @@ export default function classMinifierPlugin(options: ClassMinifierPluginOptions 
         }
       }
 
-      // Emit class mapping
       if (options.verbose) {
-        this.emitFile({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        ;(this as any).emitFile({
           type: 'asset',
           fileName: 'class-map.json',
           source: JSON.stringify(minifier.getMapping(), null, 2),
